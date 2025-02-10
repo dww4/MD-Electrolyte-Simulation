@@ -1,0 +1,132 @@
+#Coarse-grained Molecular Dynamics of Seperator + Electrolyte System### 
+#by Dejuante (DJ) Walker
+
+################Define Variables#########################
+#variable tr equal 2     #Set trajectory number
+#variable L equal 15    #Set Box Length
+#variable Nsalt equal 10 #Set Salt Concentration
+#variable r equal 5     #Set pore radius
+variable tmax equal 5e6 #set maximum simulation time
+variable eps equal 78.4    #set dielectric constant for charges
+#variable SEED1 equal 12395 #set SEED for all random processes (create atoms,...)
+variable SEED2 equal ${SEED1}+1  #set SEED for all random processes (create atoms,...)
+variable L2 equal ${L}/2
+#variable Ngroups equal 6    #set number of functional groups in pore
+
+variable msdFileName string prop/MSD_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.txt
+variable FullFileName string xyz/FullEquil_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.xyz
+variable LimFileName string xyz/LimEquil_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.xyz
+variable EtotFileName string prop/Etot_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.txt
+variable datFileName string res/Min_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.dat
+variable LimdatFileName string res/LimEquil_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.dat
+
+################Initialize System#########################
+
+units real  #Use real units (Angstrom, fs, ...)
+dimension 3 #3 dimensions
+boundary p p p  #periodic boundary conditions in all 3D
+atom_style charge   #atoms + charges (no bonds/angles)
+pair_style lj/cut/coul/long 2.5     #LJ + Coulomb interaction with rc=2.5
+#pair_style      lj/cut 2.5
+
+################Load Salty Box + Parameters  #########################
+read_data ${datFileName}   #load energy-minimized salt configuration 
+
+include PARM.lammps     #load in parameters
+
+
+
+################Create Membrane & Pore Regions#########################
+lattice bcc 1.0
+region membrane block -${L2} ${L2} -${L2} ${L2} -1 1
+
+group move_ions region membrane     #groups ions in the membrane region
+displace_atoms move_ions move 0 0 ${L2}     #move ions out of membrane region
+
+create_atoms 3 region membrane  #add wall atoms
+
+region pore cylinder z 0 0 ${r} -1 1   #create cylindrical pore region
+delete_atoms region pore     #remove atoms from pore region
+
+################Add Functional Groups#########################
+region salt_box_L block -${L2} ${L2} -${L2} ${L2} 1 ${L2}
+region salt_box_R block -${L2} ${L2} -${L2} ${L2} -${L2} -1
+region salt_box union 2 salt_box_L salt_box_R
+create_atoms 5 random ${Ngroups} ${SEED1} salt_box  overlap 1 # H atoms
+
+label loop
+variable i loop ${Ngroups}
+  variable angle equal ${i}*360.0/${Ngroups}  # Calculate angle in degrees
+  variable radians equal ${angle}*3.14159265359/180.0  # Convert to radians
+  
+  # Calculate x and y positions
+  variable x equal (${r}-2)*cos(${radians})
+  variable y equal (${r}-2)*sin(${radians})
+
+  create_atoms 4 single ${x} ${y} 0
+
+  # Print the position
+  #print "Point ${i}: x = ${x}, y = ${y}"
+
+next i
+jump SELF loop
+
+
+################Define Atoms#########################
+# Set dielectric constant
+dielectric ${eps}
+
+# Assign charges
+set type 1 charge 1.0   #set Li+ charge
+set type 2 charge -1.0  #set PF6- charge
+set type 3 charge 0.0   #set Membrane charge
+set type 4 charge -1.0  #set SO3- charge
+set type 5 charge 1.0   #set H+ charge
+
+# Group mobile ions
+group m_ions type 1 2 5
+
+# Kspace settings
+kspace_style    ewald 1.0e-4
+
+###############################Output/Visualization 1###############################
+thermo 1000     #print out every 1000 timesteps
+thermo_style custom step temp pe ke etotal press    #output using a custom style of: timestep, temperature, potential energy, kinetic energy, total energy, and pressure
+
+dump 1 all custom 1000 ${LimFileName} id type x y z
+
+###############################Run Limited Equilibration###############################
+
+# Initial velocities
+velocity all create 300.0 ${SEED1}      #set initialize velocities at 300K
+
+variable Etot equal etotal                                          #set variable that tracks energy of salt-salt and salt-wall (excludes wall-wall interaction)
+fix myEtot m_ions ave/time 10 10 100 v_Etot file ${EtotFileName}      #calculate the average total energy every 10 timesteps, average over 10 timesteps, and print every 100 timesteps
+
+fix 1 m_ions nve/limit 0.15
+fix 2 m_ions temp/berendsen 300.0 300.0 100  #fix 2 maintains temperature (Tstart 300K, Tend 300K, 100fs Dampening) using Berendsen thermostat 
+
+timestep 1    #set simulation timestep to 1 fs
+
+run 10000
+
+write_data ${LimdatFileName}
+
+unfix 1
+unfix myEtot
+undump 1
+reset_timestep 0 
+
+###############################Run Full Equilibration###############################
+dump 1 all custom 1000 ${FullFileName} id type x y z
+
+fix 1 m_ions nve
+compute myMSD m_ions msd   #compute MSD for mobile ions 
+
+fix msd_output all ave/time 1 100 1000 c_myMSD[4] file ${msdFileName} #mode vector
+
+timestep 0.5    #set simulation timestep to 0.005 fs
+run ${tmax}
+
+
+print "Done"

@@ -1,0 +1,80 @@
+#Coarse-grained Molecular Dynamics of Seperator + Electrolyte System### 
+#by Dejuante (DJ) Walker
+
+################Define Variables#########################
+#variable tr equal 1     #Set trajectory number
+#variable L equal 15    #Set Box Length
+#variable Nsalt equal 10 #Set Salt Concentration
+#variable r equal 5     #Set pore radius
+variable tmax equal 1e6 #set maximum simulation time
+variable eps equal 78.4    #set dielectric constant for charges
+#variable SEED1 equal 12348 #set SEED for all random processes (create atoms,...)
+variable SEED2 equal ${SEED1}+1  #set SEED for all random processes (create atoms,...)
+variable L2 equal ${L}/2
+#variable Ngroups equal 6    #set number of functional groups in pore
+
+variable xyzFileName string xyz/Min_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.xyz
+variable datFileName string res/Min_Nsalt${Nsalt}_L${L}_r${r}_Ngroup${Ngroups}_tr${tr}.dat
+
+################Initialize System#########################
+
+units real  #Use real units (Angstrom, fs, ...)
+dimension 3 #3 dimensions
+boundary p p p  #periodic boundary conditions in all 3D
+atom_style charge   #atoms + charges (no bonds/angles)
+
+################Create Simulation Box#########################
+
+region box block -${L2} ${L2} -${L2} ${L2} -${L2} ${L2}
+create_box 5 box  #create simulation box with 5 atom types (Li+, PF6-, Membrane, SO3-, H+)
+
+################Create Membrane, Pore, & Bulk Regions#########################
+
+# Create salt atoms (NaCl)
+region salt_box_L block -${L2} ${L2} -${L2} ${L2} 1 ${L2}
+region salt_box_R block -${L2} ${L2} -${L2} ${L2} -${L2} -1
+region salt_box union 2 salt_box_L salt_box_R
+
+create_atoms 1 random ${Nsalt} ${SEED1} salt_box  overlap 1 # Na atoms
+create_atoms 2 random ${Nsalt} ${SEED2} salt_box  overlap 1 # Cl atoms
+
+################Define Atoms#########################
+# Set dielectric constant
+dielectric ${eps}
+
+# Define pair potentials
+pair_style lj/cut/coul/long 2.5
+#pair_style lj/cut 2.5
+include PARM.lammps     #load in parameters 
+
+# Assign charges
+set type 1 charge 1.0   #set Li+ charge
+set type 2 charge -1.0  #set PF6- charge
+set type 3 charge 0.0   #set Membrane charge
+set type 4 charge -1.0  #set SO3- charge
+set type 5 charge 1.0   #set H+ charge
+
+# Group mobile ions
+group m_ions type 1 2 5
+
+# Kspace settings
+kspace_style ewald 1.0e-4
+
+###############################Output/Visualization 1###############################
+thermo 100     #print out every 100 timesteps
+thermo_style custom step temp pe ke etotal press    #output using a custom style of: timestep, temperature, potential energy, kinetic energy, total energy, and pressure
+
+dump 1 all custom 100 ${xyzFileName} id type x y z
+
+###############################Run Minimization###############################
+minimize 1.0e-4 1.0e-6 1000 10000   #minimizes energy until delE b/t iterations < 1E-4 and until max force between atoms is < 1E-6 with 1000 max iterations and 10000 max energy/force calculations
+
+write_data ${datFileName}
+
+print "Done"
+
+
+######Adding charges:
+#pair_style
+#set charge
+#kspace_style
